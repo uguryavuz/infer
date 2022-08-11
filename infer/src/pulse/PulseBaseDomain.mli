@@ -17,12 +17,20 @@ type cell = PulseBaseMemory.Edges.t * Attributes.t
 
 val empty : t
 
-val reachable_addresses : ?var_filter:(Var.t -> bool) -> t -> AbstractValue.Set.t
+val reachable_addresses :
+  ?skip:(AbstractValue.t * AbstractValue.t) list
+  -> ?var_filter:(Var.t -> bool)
+  -> t
+  -> AbstractValue.Set.t
 (** compute the set of abstract addresses that are "used" in the abstract state, i.e. reachable from
     the stack variables *)
 
 val reachable_addresses_from :
-  ?already_visited:AbstractValue.Set.t -> AbstractValue.t Seq.t -> t -> AbstractValue.Set.t
+  ?skip:(AbstractValue.t * AbstractValue.t) list
+  -> ?already_visited:AbstractValue.Set.t
+  -> AbstractValue.t Seq.t
+  -> t
+  -> AbstractValue.Set.t
 (** Compute the set of abstract addresses that are reachable from given abstract addresses. Use
     already_visited as initial set of visited values (empty by default). *)
 
@@ -46,7 +54,8 @@ val subst_var : for_summary:bool -> AbstractValue.t * AbstractValue.t -> t -> t 
 
 module GraphVisit : sig
   val fold :
-       var_filter:(Var.t -> bool)
+       ?skip:(AbstractValue.t * AbstractValue.t) list
+    -> var_filter:(Var.t -> bool)
     -> t
     -> init:'accum
     -> f:
@@ -64,7 +73,8 @@ module GraphVisit : sig
       reached and the access path from that variable to the address. *)
 
   val fold_from_addresses :
-       AbstractValue.t Seq.t
+       ?skip:(AbstractValue.t * AbstractValue.t) list
+    -> AbstractValue.t Seq.t
     -> t
     -> init:'accum
     -> already_visited:AbstractValue.Set.t

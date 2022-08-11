@@ -187,7 +187,8 @@ let pp fmt {heap; stack; attrs} =
 
 module GraphVisit : sig
   val fold :
-       var_filter:(Var.t -> bool)
+       ?skip:(AbstractValue.t * AbstractValue.t) list
+    -> var_filter:(Var.t -> bool)
     -> t
     -> init:'accum
     -> f:
@@ -205,7 +206,8 @@ module GraphVisit : sig
       reached and the access path from that variable to the address. *)
 
   val fold_from_addresses :
-       AbstractValue.t Seq.t
+       ?skip:(AbstractValue.t * AbstractValue.t) list
+    -> AbstractValue.t Seq.t
     -> t
     -> init:'accum
     -> already_visited:AbstractValue.Set.t
@@ -228,7 +230,8 @@ end = struct
       `NotAlreadyVisited visited
 
 
-  let rec visit_address address ~f rev_accesses astate ((visited, accum) as visited_accum) =
+  let rec visit_address ?(skip = []) address ~f rev_accesses astate
+      ((visited, accum) as visited_accum) =
     match visit address visited with
     | `AlreadyVisited ->
         Continue visited_accum
@@ -239,36 +242,47 @@ end = struct
         | None ->
             Continue (visited, accum)
         | Some edges ->
-            visit_edges edges ~f rev_accesses astate (visited, accum) )
+          let outgoing_addresses =
+            List.map
+              (List.filter skip ~f:(fun edge_tuple ->
+                   AbstractValue.equal (fst edge_tuple) address ) )
+              ~f:(fun edge_tuple -> snd edge_tuple)
+          in
+          let filtered_edges =
+            Memory.Edges.filter edges ~f:(fun edge ->
+                not (List.mem outgoing_addresses (fst (snd edge)) ~equal:AbstractValue.equal) )
+          in
+          visit_edges ~skip filtered_edges ~f rev_accesses astate (visited, accum) )
       | Stop fin ->
           Stop (visited, fin) )
 
 
-  and visit_edges edges ~f rev_accesses astate visited_accum =
+  and visit_edges ?(skip = []) edges ~f rev_accesses astate visited_accum =
     let finish visited_accum = Continue visited_accum in
     Container.fold_until edges ~fold:Memory.Edges.fold ~finish ~init:visited_accum
       ~f:(fun visited_accum (access, (address, _trace)) ->
-        match visit_access ~f access astate visited_accum with
+        match visit_access ~skip ~f access astate visited_accum with
         | Stop fin ->
             Stop (Stop fin)
         | Continue visited_accum -> (
-          match visit_address address ~f (access :: rev_accesses) astate visited_accum with
+          match visit_address ~skip address ~f (access :: rev_accesses) astate visited_accum with
           | Continue _ as cont ->
               cont
           | Stop fin ->
               Stop (Stop fin) ) )
 
 
-  and visit_access ~f (access : Memory.Access.t) astate visited_accum =
+  and visit_access ?(skip = []) ~f (access : Memory.Access.t) astate visited_accum =
     match access with
     | ArrayAccess (_, addr) ->
-        visit_address addr ~f [] astate visited_accum
+      visit_address ~skip addr ~f [] astate visited_accum
     | FieldAccess _ | TakeAddress | Dereference ->
         Continue visited_accum
 
 
-  let visit_address_from_var (orig_var, (address, _loc)) ~f rev_accesses astate visited_accum =
-    visit_address address ~f:(f orig_var) rev_accesses astate visited_accum
+  let visit_address_from_var ?(skip = []) (orig_var, (address, _loc)) ~f rev_accesses astate
+      visited_accum =
+    visit_address ~skip address ~f:(f orig_var) rev_accesses astate visited_accum
 
 
   let fold_common x astate ~fold ~filter ~visit ~init ~already_visited ~f ~finish =
@@ -278,26 +292,30 @@ end = struct
         if filter elem then visit elem ~f [] astate visited_accum else Continue visited_accum )
 
 
-  let fold ~var_filter astate =
+  let fold ?(skip = []) ~var_filter astate =
+    let visit_address_from_var_skip = visit_address_from_var ~skip in
     fold_common astate.stack astate
       ~fold:(IContainer.fold_of_pervasives_map_fold Stack.fold)
       ~filter:(fun (var, _) -> var_filter var)
-      ~visit:visit_address_from_var ~already_visited:AbstractValue.Set.empty
+      ~visit:visit_address_from_var_skip ~already_visited:AbstractValue.Set.empty
 
 
-  let fold_from_addresses from astate =
+  let fold_from_addresses ?(skip = []) from astate =
     let seq_fold seq ~init ~f = Seq.fold_left f init seq in
-    fold_common from astate ~fold:seq_fold ~filter:(fun _ -> true) ~visit:visit_address
+    let visit_address_skip = visit_address ~skip in
+    fold_common from astate ~fold:seq_fold ~filter:(fun _ -> true) ~visit:visit_address_skip
 end
 
 include GraphComparison
 
-let reachable_addresses ?(var_filter = fun _ -> true) astate =
-  GraphVisit.fold astate ~var_filter ~init:() ~finish:Fn.id ~f:(fun _ () _ _ -> Continue ()) |> fst
+let reachable_addresses ?(skip = []) ?(var_filter = fun _ -> true) astate =
+  GraphVisit.fold astate ~skip ~var_filter ~init:() ~finish:Fn.id ~f:(fun _ () _ _ -> Continue ())
+  |> fst
 
 
-let reachable_addresses_from ?(already_visited = AbstractValue.Set.empty) addresses astate =
-  GraphVisit.fold_from_addresses addresses astate ~init:() ~already_visited ~finish:Fn.id
+let reachable_addresses_from ?(skip = []) ?(already_visited = AbstractValue.Set.empty) addresses
+    astate =
+  GraphVisit.fold_from_addresses ~skip addresses astate ~init:() ~already_visited ~finish:Fn.id
     ~f:(fun () _ _ -> Continue ())
   |> fst
 
